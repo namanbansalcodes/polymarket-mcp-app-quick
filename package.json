@@ -1,9 +1,9 @@
 {
-  "name": "project",
+  "name": "polymarket-mcp-app",
   "type": "module",
   "version": "1.0.0",
-  "description": "MCP server: project",
-  "author": "",
+  "description": "Polymarket Prediction Markets MCP Server with interactive widgets",
+  "author": "Naman Bansal",
   "license": "MIT",
   "keywords": [
     "mcp",

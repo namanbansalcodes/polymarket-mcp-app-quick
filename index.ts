@@ -1,14 +1,15 @@
 import { MCPServer, object, text, widget } from "mcp-use/server";
 import { z } from "zod";
+import https from "https";
 
 const server = new MCPServer({
-  name: "project",
-  title: "project", // display name
+  name: "polymarket",
+  title: "Polymarket Prediction Markets",
   version: "1.0.0",
-  description: "MCP server with MCP Apps integration",
-  baseUrl: process.env.MCP_URL || "http://localhost:3000", // Full base URL (e.g., https://myserver.com)
+  description: "Browse and analyze Polymarket prediction markets with interactive widgets",
+  baseUrl: process.env.MCP_URL || "http://localhost:3000",
   favicon: "favicon.ico",
-  websiteUrl: "https://mcp-use.com", // Can be customized later
+  websiteUrl: "https://polymarket.com",
   icons: [
     {
       src: "icon.svg",
@@ -18,87 +19,168 @@ const server = new MCPServer({
   ],
 });
 
-/**
- * TOOL THAT RETURNS A WIDGET
- * The `widget` config tells mcp-use which widget component to render.
- * The `widget()` helper in the handler passes props to that component.
- * Docs: https://mcp-use.com/docs/typescript/server/mcp-apps
- */
+// ============================================================================
+// POLYMARKET API HELPERS
+// ============================================================================
 
-// Fruits data — color values are Tailwind bg-[] classes used by the carousel UI
-const fruits = [
-  { fruit: "mango", color: "bg-[#FBF1E1] dark:bg-[#FBF1E1]/10" },
-  { fruit: "pineapple", color: "bg-[#f8f0d9] dark:bg-[#f8f0d9]/10" },
-  { fruit: "cherries", color: "bg-[#E2EDDC] dark:bg-[#E2EDDC]/10" },
-  { fruit: "coconut", color: "bg-[#fbedd3] dark:bg-[#fbedd3]/10" },
-  { fruit: "apricot", color: "bg-[#fee6ca] dark:bg-[#fee6ca]/10" },
-  { fruit: "blueberry", color: "bg-[#e0e6e6] dark:bg-[#e0e6e6]/10" },
-  { fruit: "grapes", color: "bg-[#f4ebe2] dark:bg-[#f4ebe2]/10" },
-  { fruit: "watermelon", color: "bg-[#e6eddb] dark:bg-[#e6eddb]/10" },
-  { fruit: "orange", color: "bg-[#fdebdf] dark:bg-[#fdebdf]/10" },
-  { fruit: "avocado", color: "bg-[#ecefda] dark:bg-[#ecefda]/10" },
-  { fruit: "apple", color: "bg-[#F9E7E4] dark:bg-[#F9E7E4]/10" },
-  { fruit: "pear", color: "bg-[#f1f1cf] dark:bg-[#f1f1cf]/10" },
-  { fruit: "plum", color: "bg-[#ece5ec] dark:bg-[#ece5ec]/10" },
-  { fruit: "banana", color: "bg-[#fdf0dd] dark:bg-[#fdf0dd]/10" },
-  { fruit: "strawberry", color: "bg-[#f7e6df] dark:bg-[#f7e6df]/10" },
-  { fruit: "lemon", color: "bg-[#feeecd] dark:bg-[#feeecd]/10" },
-];
+async function fetchFromPolymarket(endpoint: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const url = `https://gamma-api.polymarket.com${endpoint}`;
+    https
+      .get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error("Failed to parse Polymarket response"));
+          }
+        });
+      })
+      .on("error", reject);
+  });
+}
+
+async function getMarkets(limit: number = 20, closed: boolean = false): Promise<any[]> {
+  try {
+    return await fetchFromPolymarket(`/markets?limit=${limit}&closed=${closed}`);
+  } catch (e) {
+    console.error("Error fetching markets:", e);
+    return [];
+  }
+}
+
+async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]> {
+  try {
+    const markets = await getMarkets(limit, false);
+    const keywordLower = keyword.toLowerCase();
+    return markets.filter(market =>
+      (market.question || "").toLowerCase().includes(keywordLower)
+    );
+  } catch (e) {
+    console.error("Error searching markets:", e);
+    return [];
+  }
+}
+
+function formatVolume(volume: number): string {
+  if (volume > 1000000) return `$${(volume / 1000000).toFixed(1)}M`;
+  if (volume > 1000) return `$${(volume / 1000).toFixed(1)}K`;
+  return `$${volume.toFixed(0)}`;
+}
+
+function getPriceData(market: any) {
+  const pricesStr = market.outcomePrices || '["0.5", "0.5"]';
+  const prices = JSON.parse(pricesStr);
+  return {
+    yesPrice: parseFloat(prices[0] || "0.5"),
+    noPrice: parseFloat(prices[1] || "0.5"),
+  };
+}
+
+// ============================================================================
+// TOOLS
+// ============================================================================
 
 server.tool(
   {
-    name: "search-tools",
-    description: "Search for fruits and display the results in a visual widget",
+    name: "search_markets",
+    description: "Search Polymarket prediction markets by keyword",
     schema: z.object({
-      query: z.string().optional().describe("Search query to filter fruits"),
+      keyword: z.string().describe("Search term (e.g., 'Trump', 'bitcoin', 'AI')"),
+      limit: z.number().optional().describe("Max results (default: 10)"),
     }),
-    widget: {
-      name: "product-search-result",
-      invoking: "Searching...",
-      invoked: "Results loaded",
-    },
   },
-  async ({ query }) => {
-    const results = fruits.filter(
-      (f) => !query || f.fruit.toLowerCase().includes(query.toLowerCase())
-    );
+  async ({ keyword, limit = 10 }) => {
+    const markets = await searchMarkets(keyword, 50);
 
-    // let's emulate a delay to show the loading state
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (markets.length === 0) {
+      return text(`No markets found matching "${keyword}"`);
+    }
 
-    return widget({
-      props: { query: query ?? "", results },
-      output: text(
-        `Found ${results.length} fruits matching "${query ?? "all"}"`
-      ),
-    });
+    const displayMarkets = markets.slice(0, limit);
+    let result = `SEARCH RESULTS: "${keyword}"\n`;
+    result += `Found ${markets.length} market${markets.length !== 1 ? 's' : ''}\n\n`;
+
+    for (let i = 0; i < displayMarkets.length; i++) {
+      const market = displayMarkets[i];
+      const { yesPrice } = getPriceData(market);
+      const volume = market.volumeNum || market.volume || 0;
+
+      result += `${i + 1}. ${market.question}\n`;
+      result += `   YES: ${Math.round(yesPrice * 100)}¢`;
+      result += ` | Volume: ${formatVolume(volume)}\n\n`;
+    }
+
+    result += `\nUse view_market to see detailed data and interactive chart.`;
+    return text(result);
   }
 );
 
 server.tool(
   {
-    name: "get-fruit-details",
-    description: "Get detailed information about a specific fruit",
+    name: "trending_markets",
+    description: "Get the top trending Polymarket prediction markets",
     schema: z.object({
-      fruit: z.string().describe("The fruit name"),
-    }),
-    outputSchema: z.object({
-      fruit: z.string(),
-      color: z.string(),
-      facts: z.array(z.string()),
+      limit: z.number().optional().describe("Number of markets (default: 10)"),
     }),
   },
-  async ({ fruit }) => {
-    const found = fruits.find(
-      (f) => f.fruit?.toLowerCase() === fruit?.toLowerCase()
-    );
-    return object({
-      fruit: found?.fruit ?? fruit,
-      color: found?.color ?? "unknown",
-      facts: [
-        `${fruit} is a delicious fruit`,
-        `Color: ${found?.color ?? "unknown"}`,
-      ],
+  async ({ limit = 10 }) => {
+    const markets = await getMarkets(limit, false);
+
+    if (markets.length === 0) {
+      return text("Unable to fetch markets from Polymarket.");
+    }
+
+    let result = "TOP TRENDING MARKETS\n\n";
+
+    for (let i = 0; i < markets.length; i++) {
+      const market = markets[i];
+      const { yesPrice } = getPriceData(market);
+      const volume = market.volumeNum || market.volume || 0;
+
+      result += `${i + 1}. ${market.question}\n`;
+      result += `   YES: ${Math.round(yesPrice * 100)}¢`;
+      result += ` | Volume: ${formatVolume(volume)}\n\n`;
+    }
+
+    return text(result);
+  }
+);
+
+server.tool(
+  {
+    name: "view_market",
+    description: "View detailed prediction market data with interactive visualization",
+    schema: z.object({
+      keyword: z.string().describe("Search keyword for the market"),
+    }),
+    widget: {
+      name: "market-view",
+      invoking: "Loading market data...",
+      invoked: "Market loaded",
+    },
+  },
+  async ({ keyword }) => {
+    const markets = await searchMarkets(keyword, 50);
+    const marketData = markets[0];
+
+    if (!marketData) {
+      return text(`No market found for "${keyword}"`);
+    }
+
+    const { yesPrice, noPrice } = getPriceData(marketData);
+    const volume = marketData.volumeNum || marketData.volume || 0;
+
+    return widget({
+      props: {
+        title: marketData.question,
+        yesPrice: yesPrice,
+        noPrice: noPrice,
+        volume: formatVolume(volume),
+      },
+      output: text(`${marketData.question}\nYES: ${Math.round(yesPrice * 100)}¢ | NO: ${Math.round(noPrice * 100)}¢`),
     });
   }
 );
