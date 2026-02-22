@@ -1,7 +1,7 @@
-import { MCPServer, object, text, widget } from "mcp-use/server";
+import { MCPServer, object, text, widget, error as mcpError } from "mcp-use/server";
 import { z } from "zod";
 import https from "https";
-import { initializeClient, placeMarketOrder, simulateOrder, isClientReady } from "./polymarket-trading";
+import { initializeClient, placeMarketOrder, placeLimitOrder, simulateOrder, isClientReady, getWalletAddress } from "./polymarket-trading.js";
 
 const server = new MCPServer({
   name: "polymarket",
@@ -23,18 +23,20 @@ const server = new MCPServer({
 // Trading configuration
 const TRADING_MODE = process.env.TRADING_MODE || "demo"; // "demo" or "real"
 
-// Initialize Polymarket client if private key provided
-if (process.env.POLYMARKET_PRIVATE_KEY) {
-  try {
-    const result = initializeClient(process.env.POLYMARKET_PRIVATE_KEY);
-    console.log(`✓ REAL TRADING ENABLED - Wallet: ${result.address}`);
-  } catch (error: any) {
-    console.error("❌ Failed to initialize trading client:", error.message);
-    console.log("ℹ Falling back to DEMO MODE");
+// Initialize Polymarket client if private key provided (async IIFE)
+(async () => {
+  if (process.env.POLYMARKET_PRIVATE_KEY) {
+    try {
+      const result = await initializeClient(process.env.POLYMARKET_PRIVATE_KEY);
+      console.log(`✓ REAL TRADING ENABLED - Wallet: ${result.address}`);
+    } catch (error: any) {
+      console.error("❌ Failed to initialize trading client:", error.message);
+      console.log("ℹ Falling back to DEMO MODE");
+    }
+  } else {
+    console.log("ℹ DEMO MODE - No credentials found. Set POLYMARKET_PRIVATE_KEY for real trading.");
   }
-} else {
-  console.log("ℹ DEMO MODE - No credentials found. Set POLYMARKET_PRIVATE_KEY for real trading.");
-}
+})();
 
 // ============================================================================
 // POLYMARKET API HELPERS
@@ -608,6 +610,22 @@ function getPriceData(market: any) {
   };
 }
 
+function getTokenId(market: any, side: "YES" | "NO"): string | null {
+  try {
+    const clobTokenIds = market.clobTokenIds;
+    if (!clobTokenIds) return null;
+
+    const tokens = JSON.parse(clobTokenIds);
+    if (!Array.isArray(tokens) || tokens.length < 2) return null;
+
+    // Index 0 = YES token, Index 1 = NO token
+    return side === "YES" ? tokens[0] : tokens[1];
+  } catch (e) {
+    console.error("Failed to parse clobTokenIds:", e);
+    return null;
+  }
+}
+
 // ============================================================================
 // TOOLS
 // ============================================================================
@@ -835,13 +853,11 @@ server.tool(
 server.tool(
   {
     name: "execute_trade",
-    description: "Execute a BUY trade on a Polymarket prediction market. Extract the price as a decimal number (e.g., 0.65 for 65¢).",
+    description: "Prepare a trade for execution on Polymarket. Searches for the market and shows confirmation widget.",
     schema: z.object({
-      marketTitle: z.string().describe("The market question/title"),
+      marketKeyword: z.string().describe("Search keyword to find the market"),
       side: z.enum(["YES", "NO"]).describe("Which outcome to buy (YES or NO)"),
       amount: z.number().default(100).describe("Amount in USD to trade (default: 100)"),
-      price: z.number().default(0.5).describe("Current market price as decimal 0-1 (e.g., 0.65 for 65¢). If not provided, defaults to 0.5"),
-      tokenId: z.string().optional().describe("CLOB token ID for the outcome"),
     }),
     widget: {
       name: "trade-confirmation",
@@ -849,27 +865,113 @@ server.tool(
       invoked: "Trade ready for confirmation",
     },
   },
-  async ({ marketTitle, side, amount = 100, price = 0.5, tokenId }) => {
-    // Ensure price is valid
+  async ({ marketKeyword, side, amount = 100 }) => {
+    // Search for the market
+    const markets = await searchMarkets(marketKeyword, 5);
+
+    if (markets.length === 0) {
+      return mcpError(`No market found for "${marketKeyword}". Please try a different search term.`);
+    }
+
+    const market = markets[0];
+    const { yesPrice, noPrice } = getPriceData(market);
+    const price = side === "YES" ? yesPrice : noPrice;
+
+    // Get tokenId for the selected side
+    const tokenId = getTokenId(market, side);
+
+    if (!tokenId) {
+      return mcpError("Unable to get token ID for this market. It may not be tradeable.");
+    }
+
+    // Calculate estimates
     const validPrice = Math.max(0.01, Math.min(0.99, price));
     const estimatedShares = amount / validPrice;
-    const potentialProfit = side === "YES"
-      ? amount * ((1 - validPrice) / validPrice)
-      : amount * (validPrice / (1 - validPrice));
+    const potentialProfit = amount * ((1 - validPrice) / validPrice);
 
     return widget({
       props: {
-        marketTitle,
+        marketTitle: market.question,
+        marketId: market.id || market.conditionId,
+        conditionId: market.conditionId,
         side,
         action: "BUY",
         amount,
         price: validPrice,
         estimatedShares,
         potentialProfit,
-        tokenId: tokenId || "",
+        tokenId: tokenId,
+        isRealTradingEnabled: isClientReady(),
       },
-      output: text(`Trade prepared: BUY ${amount} USD of ${side} on "${marketTitle}" at ${Math.round(validPrice * 100)}¢ (${estimatedShares.toFixed(2)} shares)`),
+      output: text(
+        `Trade prepared: BUY ${amount} USD of ${side} on "${market.question}" at ${Math.round(validPrice * 100)}¢ (${estimatedShares.toFixed(2)} shares). ` +
+        (isClientReady()
+          ? "Click confirm to execute this REAL trade."
+          : "Demo mode - this will be a simulated trade.")
+      ),
     });
+  }
+);
+
+server.tool(
+  {
+    name: "confirm_trade_execution",
+    description: "Execute a real trade on Polymarket. This tool is called by the trade confirmation widget.",
+    schema: z.object({
+      tokenId: z.string().describe("CLOB token ID for the outcome"),
+      amount: z.number().describe("Amount in USD to trade"),
+      side: z.enum(["YES", "NO"]).describe("Which outcome to buy"),
+      marketTitle: z.string().describe("Market question/title for logging"),
+    }),
+  },
+  async ({ tokenId, amount, side, marketTitle }) => {
+    // Check if real trading is enabled
+    if (!isClientReady()) {
+      // Fallback to demo mode
+      const result = await simulateOrder({
+        tokenId,
+        price: 0.5,
+        size: amount / 0.5,
+        side: "BUY",
+      });
+
+      return object({
+        success: true,
+        isDemo: true,
+        orderId: result.orderId,
+        status: result.status,
+        transactionHash: result.transactionHash,
+        message: `Demo trade executed successfully! In real mode, this would have bought ${side} shares on "${marketTitle}".`,
+      });
+    }
+
+    // Execute real trade
+    try {
+      const result = await placeMarketOrder({
+        tokenId,
+        amount,
+        side: "BUY", // Always BUY for now (selling requires holding shares)
+      });
+
+      if (result.success) {
+        return object({
+          success: true,
+          isDemo: false,
+          orderId: result.orderId,
+          status: result.status,
+          transactionHash: result.transactionHash,
+          message: `Trade executed successfully! Order ID: ${result.orderId}`,
+        });
+      } else {
+        return mcpError(
+          `Trade failed: ${result.errorMsg || result.error || "Unknown error"}. ` +
+          `Please check your balance and try again.`
+        );
+      }
+    } catch (error: any) {
+      console.error("Trade execution error:", error);
+      return mcpError(`Trade execution failed: ${error.message}`);
+    }
   }
 );
 
