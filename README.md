@@ -1,8 +1,31 @@
 # Polymarket MCP App
 
-A minimalist MCP app for exploring Polymarket prediction markets. It provides a clean, bar‑style UI with widgets for trending, recent, search, market detail (with chart), and a compact portfolio view — built to let judges understand market context at a glance and drill into specific markets quickly.
+Polymarket MCP is a minimalist, high‑signal market companion that lets you discover, inspect, and reason about prediction markets inside a clean MCP UI. It’s designed for judges to grasp what’s happening at a glance: a landscape, bar‑style interface with live market data, fast search, and a focused market detail view.
 
-This is an MCP server project bootstrapped with [`create-mcp-use-app`](https://mcp-use.com/docs/typescript/getting-started/quickstart).
+Betting through AI agents is the future — this app is the first step toward that workflow: ask for context, fetch markets, and act on signals without leaving the conversation.
+
+This MCP server project was bootstrapped with [`create-mcp-use-app`](https://mcp-use.com/docs/typescript/getting-started/quickstart).
+
+## What It Does
+
+- **Trending markets**: top markets surfaced by real activity.
+- **Recent markets**: newest events as they go live.
+- **Keyword search**: find markets by topic or phrase (not just slugs).
+- **Market detail**: clear YES/NO pricing + price history chart.
+- **Portfolio widget**: compact view for positions (ready for real data wiring).
+
+## Example Prompts
+
+Use these directly in the inspector or your agent:
+
+1. `Show me trending markets`
+2. `Show me recent markets`
+3. `Search markets for: bitcoin`
+4. `Search markets for: movies`
+5. `Show me detailed chart for market/<market-slug>`
+6. `Show me detailed chart for: Will X happen by Y?`
+
+Tip: clicking a market card will pass the slug automatically for precise detail views.
 
 ## Getting Started
 
