@@ -103,7 +103,7 @@ const Login: React.FC = () => {
             <div className="pm-row">
               <div>
                 <div className="pm-meta mb-1">Wallet</div>
-                <div className="font-mono text-sm">{props.walletAddress || state.walletAddress || "Connected"}</div>
+                <div className="font-mono text-sm">{props.walletAddress || state?.walletAddress || "Connected"}</div>
               </div>
               <div className="flex gap-3">
                 <button

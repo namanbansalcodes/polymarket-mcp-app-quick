@@ -1,7 +1,7 @@
 import { MCPServer, object, text, widget, error as mcpError } from "mcp-use/server";
 import { z } from "zod";
 import https from "https";
-import { initializeClient, placeMarketOrder, placeLimitOrder, simulateOrder, isClientReady, getWalletAddress, logout } from "./polymarket-trading.js";
+import { initializeClient, placeMarketOrder, isClientReady, getWalletAddress, logout } from "./polymarket-trading.js";
 
 const server = new MCPServer({
   name: "polymarket",
@@ -21,7 +21,11 @@ const server = new MCPServer({
 });
 
 // Trading configuration
-const TRADING_MODE = process.env.TRADING_MODE || "demo"; // "demo" or "real"
+const TRADING_MODE = (process.env.TRADING_MODE || "demo").toLowerCase(); // "demo" or "real"
+
+function isRealTradingEnabled(): boolean {
+  return TRADING_MODE === "real" && isClientReady();
+}
 
 // Initialize Polymarket client if private key provided (async IIFE)
 (async () => {
@@ -748,10 +752,17 @@ function getPriceData(market: any) {
 
 function getTokenId(market: any, side: "YES" | "NO"): string | null {
   try {
-    const clobTokenIds = market.clobTokenIds;
-    if (!clobTokenIds) return null;
+    let tokens = market.clobTokenIds;
+    if (!tokens) return null;
 
-    const tokens = JSON.parse(clobTokenIds);
+    if (Array.isArray(tokens)) {
+      // use as-is
+    } else if (typeof tokens === "string") {
+      tokens = JSON.parse(tokens);
+    } else {
+      return null;
+    }
+
     if (!Array.isArray(tokens) || tokens.length < 2) return null;
 
     // Index 0 = YES token, Index 1 = NO token
@@ -760,6 +771,39 @@ function getTokenId(market: any, side: "YES" | "NO"): string | null {
     console.error("Failed to parse clobTokenIds:", e);
     return null;
   }
+}
+
+function buildMockOrder(params: {
+  tokenId: string;
+  side: "YES" | "NO";
+  amount: number;
+  price: number;
+  marketTitle: string;
+}) {
+  const safePrice = Math.max(0.01, Math.min(0.99, params.price || 0.5));
+  const size = params.amount / safePrice;
+  const orderId = `mock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const transactionHash = `0xmock${Math.random().toString(16).slice(2, 18)}`;
+
+  return {
+    success: true,
+    isDemo: true,
+    orderId,
+    status: "mock_filled",
+    transactionHash,
+    message: `Mock order submitted for "${params.marketTitle}".`,
+    request: {
+      tokenID: params.tokenId,
+      price: safePrice,
+      size,
+      side: params.side,
+      orderType: "GTC",
+    },
+    executed: {
+      price: safePrice,
+      size,
+    },
+  };
 }
 
 // ============================================================================
@@ -1089,7 +1133,9 @@ server.tool(
     const price = side === "YES" ? yesPrice : noPrice;
 
     // Get tokenId for the selected side
-    const tokenId = getTokenId(market, side);
+    const tokenIdRaw = getTokenId(market, side);
+    const realTradingEnabled = isRealTradingEnabled();
+    const tokenId = tokenIdRaw || (realTradingEnabled ? null : `mock_${market.conditionId || market.id || "token"}`);
 
     if (!tokenId) {
       return mcpError("Unable to get token ID for this market. It may not be tradeable.");
@@ -1112,11 +1158,11 @@ server.tool(
         estimatedShares,
         potentialProfit,
         tokenId: tokenId,
-        isRealTradingEnabled: isClientReady(),
+        isRealTradingEnabled: realTradingEnabled,
       },
       output: text(
         `Trade prepared: BUY ${amount} USD of ${side} on "${market.question}" at ${Math.round(validPrice * 100)}¢ (${estimatedShares.toFixed(2)} shares). ` +
-        (isClientReady()
+        (realTradingEnabled
           ? "Click confirm to execute this REAL trade."
           : "Demo mode - this will be a simulated trade.")
       ),
@@ -1132,28 +1178,24 @@ server.tool(
       tokenId: z.string().describe("CLOB token ID for the outcome"),
       amount: z.number().describe("Amount in USD to trade"),
       side: z.enum(["YES", "NO"]).describe("Which outcome to buy"),
+      price: z.number().optional().describe("Price to use for mock execution (0-1)"),
       marketTitle: z.string().describe("Market question/title for logging"),
     }),
   },
-  async ({ tokenId, amount, side, marketTitle }) => {
-    // Check if real trading is enabled
-    if (!isClientReady()) {
-      // Fallback to demo mode
-      const result = await simulateOrder({
+  async ({ tokenId, amount, side, price = 0.5, marketTitle }) => {
+    const realTradingEnabled = isRealTradingEnabled();
+    const isMockToken = tokenId.startsWith("mock_");
+
+    if (!realTradingEnabled || isMockToken) {
+      const result = buildMockOrder({
         tokenId,
-        price: 0.5,
-        size: amount / 0.5,
-        side: "BUY",
+        side,
+        amount,
+        price,
+        marketTitle,
       });
 
-      return object({
-        success: true,
-        isDemo: true,
-        orderId: result.orderId,
-        status: result.status,
-        transactionHash: result.transactionHash,
-        message: `Demo trade executed successfully! In real mode, this would have bought ${side} shares on "${marketTitle}".`,
-      });
+      return object(result);
     }
 
     // Execute real trade

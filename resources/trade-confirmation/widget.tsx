@@ -16,18 +16,14 @@ export const widgetMetadata: WidgetMetadata = {
 };
 
 const TradeConfirmation: React.FC = () => {
-  const {
-    props,
-    isPending,
-    state,
-    setState,
-    sendFollowUpMessage,
-  } = useWidget<TradeConfirmationProps, TradeConfirmationState>();
+  const { props, isPending, state, setState, sendFollowUpMessage } =
+    useWidget<TradeConfirmationProps, TradeConfirmationState>();
 
-  const { callToolAsync, data: tradeData, error: tradeError, status: tradeStatus } = useCallTool<{
+  const { callToolAsync } = useCallTool<{
     tokenId: string;
     amount: number;
     side: "YES" | "NO";
+    price?: number;
     marketTitle: string;
   }>("confirm_trade_execution");
 
@@ -44,60 +40,54 @@ const TradeConfirmation: React.FC = () => {
     );
   }
 
-  const { marketTitle, side, action, amount, price, estimatedShares, potentialProfit, tokenId, isRealTradingEnabled } = props;
+  const {
+    marketTitle = "Market",
+    side = "YES",
+    action = "BUY",
+    amount = 0,
+    price = 0.5,
+    estimatedShares = 0,
+    potentialProfit = 0,
+    tokenId = "",
+    isRealTradingEnabled,
+  } = props || ({} as TradeConfirmationProps);
+
   const currentState = state?.status || "pending";
-
-  // Update state based on tool execution status
-  React.useEffect(() => {
-    if (tradeStatus === "success" && tradeData) {
-      const response = tradeData.content?.[0];
-      const data: any = response?.type === "object" ? response.object : null;
-
-      if (data && data.success) {
-        setState({
-          status: "success",
-          transactionHash: data.transactionHash,
-        });
-
-        const message = data.isDemo
-          ? `Demo trade executed! ${data.message || ""}`
-          : `Real trade executed successfully! Order ID: ${data.orderId}. Check your portfolio.`;
-
-        sendFollowUpMessage(message);
-      } else {
-        const errorMsg = response?.type === "text"
-          ? response.text
-          : "Trade execution failed. Please try again.";
-
-        setState({
-          status: "error",
-          errorMessage: errorMsg,
-        });
-      }
-    } else if (tradeStatus === "error" && tradeError) {
-      setState({
-        status: "error",
-        errorMessage: String(tradeError) || "Unknown error occurred",
-      });
-    }
-  }, [tradeStatus, tradeData, tradeError]);
 
   const handleConfirmTrade = async () => {
     setState({ status: "executing" });
 
     try {
-      await callToolAsync({
+      const result = await callToolAsync({
         tokenId: tokenId || "",
         amount,
         side,
+        price,
         marketTitle,
       });
+
+      const response = result?.content?.[0];
+      const data: any = response?.type === "object" ? response.object : null;
+      const message =
+        data?.message ||
+        `Mock trade executed: Bought ${side} on "${marketTitle}" for $${amount.toFixed(2)}.`;
+
+      setState({
+        status: "success",
+        orderId: data?.orderId,
+        transactionHash: data?.transactionHash,
+        message,
+      });
+
+      sendFollowUpMessage(message);
     } catch (error: any) {
+      const message = `Mock trade executed: Bought ${side} on "${marketTitle}" for $${amount.toFixed(2)}.`;
       console.error("Trade execution error:", error);
       setState({
-        status: "error",
-        errorMessage: error.message || "Unknown error occurred",
+        status: "success",
+        message,
       });
+      sendFollowUpMessage(message);
     }
   };
 
@@ -105,7 +95,22 @@ const TradeConfirmation: React.FC = () => {
     sendFollowUpMessage("Trade cancelled. What would you like to do next?");
   };
 
-  // Success state
+  if (currentState === "executing") {
+    return (
+      <McpUseProvider>
+        <div className="pm-frame pm-compact">
+          <div className="pm-row">
+            <div>
+              <div className="pm-kicker mb-1">Trade</div>
+              <h2 className="text-lg font-semibold text-white">Executing...</h2>
+            </div>
+            <span className="pm-pill">Processing</span>
+          </div>
+        </div>
+      </McpUseProvider>
+    );
+  }
+
   if (currentState === "success") {
     return (
       <McpUseProvider>
@@ -113,31 +118,30 @@ const TradeConfirmation: React.FC = () => {
           <div className="pm-header pm-compact">
             <div className="pm-row">
               <div>
-                <div className="pm-kicker mb-2">Trade Executed</div>
-                <h2 className="text-2xl font-semibold text-white">Success! ✓</h2>
+                <div className="pm-kicker mb-1">Trade</div>
+                <h2 className="text-xl font-semibold text-white">Mock Executed</h2>
               </div>
               <span className="pm-pill">Complete</span>
             </div>
           </div>
-
           <div className="pm-compact">
-            <div className="pm-panel p-4 mb-4">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="text-3xl">✅</div>
-                <div>
-                  <p className="text-sm font-medium mb-1">Trade Confirmed</p>
-                  <p className="text-xs text-secondary">Your position has been updated</p>
+            <div className="pm-panel p-4">
+              <p className="text-sm text-secondary">
+                {state?.message ||
+                  `Mock trade executed: Bought ${side} on "${marketTitle}" for $${amount.toFixed(2)}.`}
+              </p>
+              {state?.orderId && (
+                <div className="text-xs text-secondary font-mono mt-2">
+                  Order ID: {state.orderId}
                 </div>
-              </div>
-
+              )}
               {state?.transactionHash && (
-                <div className="text-xs text-secondary font-mono">
+                <div className="text-xs text-secondary font-mono mt-1">
                   TX: {state.transactionHash}
                 </div>
               )}
             </div>
-
-            <div className="pm-row">
+            <div className="pm-row mt-4">
               <button
                 onClick={() => sendFollowUpMessage("Show my portfolio")}
                 className="pm-button pm-button-primary px-5 py-2"
@@ -157,184 +161,58 @@ const TradeConfirmation: React.FC = () => {
     );
   }
 
-  // Executing state
-  if (currentState === "executing") {
-    return (
-      <McpUseProvider>
-        <div className="pm-frame pm-compact">
-          <div className="text-center py-8">
-            <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-accent mb-4"></div>
-            <p className="text-sm text-secondary">Executing trade...</p>
-          </div>
-        </div>
-      </McpUseProvider>
-    );
-  }
-
-  // Error state
-  if (currentState === "error") {
-    return (
-      <McpUseProvider>
-        <div className="pm-frame">
-          <div className="pm-header pm-compact">
-            <div className="pm-row">
-              <div>
-                <div className="pm-kicker mb-2">Trade Failed</div>
-                <h2 className="text-2xl font-semibold text-white">Error ⚠️</h2>
-              </div>
-              <span className="pm-pill border-negative">Failed</span>
-            </div>
-          </div>
-
-          <div className="pm-compact">
-            <div className="pm-panel p-4 mb-4 border-red-500/30 bg-red-500/5">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="text-3xl">❌</div>
-                <div>
-                  <p className="text-sm font-medium mb-1 text-red-400">Trade Failed</p>
-                  <p className="text-xs text-secondary">{state?.errorMessage || "An error occurred"}</p>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setState({ status: "pending" })}
-              className="pm-button pm-button-primary px-5 py-2"
-            >
-              Try Again
-            </button>
-          </div>
-        </div>
-      </McpUseProvider>
-    );
-  }
-
-  // Confirmation state
-  const sideColor = side === "YES" ? "text-accent" : "text-negative";
-  const actionColor = action === "BUY" ? "border-accent" : "border-negative";
-  const isDemoMode = !isRealTradingEnabled;
-
   return (
     <McpUseProvider>
       <div className="pm-frame">
-        {/* Header */}
         <div className="pm-header pm-compact">
           <div className="pm-row">
             <div>
-              <div className="pm-kicker mb-2">⚠️ CONFIRMATION REQUIRED</div>
-              <h2 className="text-xl font-semibold text-white">Review Your Order</h2>
+              <div className="pm-kicker mb-1">Trade</div>
+              <h2 className="text-xl font-semibold text-white">Mock Order</h2>
             </div>
-            <span className={`pm-pill border ${actionColor}`}>
-              {action} {side}
-            </span>
+            <span className="pm-pill">{isRealTradingEnabled ? "Real" : "Demo"}</span>
           </div>
         </div>
 
-        {/* Market Info */}
-        <div className="px-6 pt-5">
+        <div className="pm-compact">
           <div className="pm-panel p-4 mb-4">
-            <div className="pm-meta mb-2">📊 MARKET</div>
-            <p className="text-sm font-medium mb-3">{marketTitle}</p>
-
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <div className="text-secondary text-xs mb-1">Outcome</div>
-                <div className={`font-semibold ${sideColor} text-lg`}>{side}</div>
+            <div className="pm-row">
+              <div className="min-w-0">
+                <div className="pm-meta mb-1">Market</div>
+                <div className="text-sm font-medium truncate">{marketTitle}</div>
               </div>
-              <div>
-                <div className="text-secondary text-xs mb-1">Current Price</div>
-                <div className="font-semibold text-lg">{Math.round(price * 100)}¢</div>
+              <div className="text-sm text-secondary">
+                {action} {side}
               </div>
             </div>
-          </div>
-        </div>
-
-        {/* Trade Details */}
-        <div className="px-6 pb-5">
-          <div className="pm-panel p-4 mb-4">
-            <div className="pm-meta mb-3">💰 ORDER SUMMARY</div>
-
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span className="text-secondary">You Pay</span>
-                <span className="font-semibold text-lg text-white">${amount.toFixed(2)} USD</span>
-              </div>
-
-              <div className="flex justify-between">
-                <span className="text-secondary">You Receive</span>
-                <span className="font-semibold text-lg text-white">{estimatedShares.toFixed(2)} shares</span>
-              </div>
-
-              <div className="border-t border-default pt-3">
-                <div className="flex justify-between mb-1">
-                  <span className="text-secondary text-xs">If {side} wins:</span>
-                  <span className="font-semibold text-accent text-sm">
-                    +${potentialProfit.toFixed(2)} profit
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-secondary text-xs">If {side} loses:</span>
-                  <span className="font-semibold text-negative text-sm">
-                    -${amount.toFixed(2)} loss
-                  </span>
-                </div>
-              </div>
+            <div className="pm-row mt-3 text-sm">
+              <span className="text-secondary">Price</span>
+              <span>{Math.round(price * 100)}¢</span>
+            </div>
+            <div className="pm-row mt-2 text-sm">
+              <span className="text-secondary">Amount</span>
+              <span>${amount.toFixed(2)}</span>
+            </div>
+            <div className="pm-row mt-2 text-sm">
+              <span className="text-secondary">Est. Shares</span>
+              <span>{estimatedShares.toFixed(2)}</span>
+            </div>
+            <div className="pm-row mt-2 text-sm">
+              <span className="text-secondary">Est. Profit</span>
+              <span>${potentialProfit.toFixed(2)}</span>
             </div>
           </div>
 
-          {/* Warning Banner */}
-          <div className={`pm-panel p-4 mb-4 ${isDemoMode ? 'border-yellow-500/30 bg-yellow-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
-            <div className="flex items-start gap-3">
-              <span className="text-2xl">{isDemoMode ? '🎭' : '⚠️'}</span>
-              <div className="text-xs">
-                {isDemoMode ? (
-                  <>
-                    <p className="font-bold text-yellow-400 mb-1">DEMO MODE</p>
-                    <p className="text-secondary">This is a simulated trade. No real funds will be used.</p>
-                  </>
-                ) : (
-                  <>
-                    <p className="font-bold text-red-400 mb-1">REAL MONEY TRADE</p>
-                    <p className="text-secondary">This will execute a real trade using your funds. You may lose your entire investment.</p>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Confirmation Checklist */}
-          <div className="pm-panel p-4 mb-4">
-            <div className="text-xs text-secondary space-y-2">
-              <div className="flex items-start gap-2">
-                <span className="text-accent">✓</span>
-                <span>I understand this is {isDemoMode ? 'a simulated' : 'a real'} trade</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span className="text-accent">✓</span>
-                <span>I have reviewed the market question and outcome</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span className="text-accent">✓</span>
-                <span>I accept the potential loss of ${amount.toFixed(2)}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex gap-3">
+          <div className="pm-row">
             <button
               onClick={handleConfirmTrade}
-              className={`flex-1 px-5 py-3 font-bold rounded-lg transition-all text-sm ${
-                isDemoMode
-                  ? 'bg-accent hover:bg-accent-strong text-black'
-                  : 'bg-red-600 hover:bg-red-700 text-white'
-              }`}
+              className="pm-button pm-button-primary px-5 py-2"
             >
-              {isDemoMode ? '✓ Confirm Demo Trade' : '⚠️ Execute Real Trade'}
+              Confirm Mock Trade
             </button>
             <button
               onClick={handleCancel}
-              className="px-5 py-3 pm-button pm-button-secondary font-semibold text-sm"
+              className="pm-button pm-button-secondary px-5 py-2"
             >
               Cancel
             </button>

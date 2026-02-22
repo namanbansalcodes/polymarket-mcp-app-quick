@@ -1,6 +1,12 @@
 # Polymarket MCP App
 
-Deployed on mcp-use cloud: `https://cold-meadow-fkl7v.run.mcp-use.com/mcp`
+## Quick Start (No Clone Required)
+
+Use the hosted MCP endpoint directly in Claude Desktop:
+
+`https://cold-meadow-fkl7v.run.mcp-use.com/mcp`
+
+This is the primary flow — you don’t need to clone the repo to try it.
 
 Polymarket MCP is a minimalist, high‑signal market companion that lets you discover, inspect, and reason about prediction markets inside a clean MCP UI. It’s designed for judges to grasp what’s happening at a glance: a landscape, bar‑style interface with live market data, fast search, and a focused market detail view.
 

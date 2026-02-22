@@ -20,4 +20,6 @@ export type TradeConfirmationState = {
   status: "pending" | "confirming" | "executing" | "success" | "error";
   errorMessage?: string;
   transactionHash?: string;
+  orderId?: string;
+  message?: string;
 };
