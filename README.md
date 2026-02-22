@@ -1,4 +1,6 @@
-# MCP Server built with mcp-use
+# Polymarket MCP App
+
+A minimalist MCP app for exploring Polymarket prediction markets. It provides a clean, bar‑style UI with widgets for trending, recent, search, market detail (with chart), and a compact portfolio view — built to let judges understand market context at a glance and drill into specific markets quickly.
 
 This is an MCP server project bootstrapped with [`create-mcp-use-app`](https://mcp-use.com/docs/typescript/getting-started/quickstart).
 
