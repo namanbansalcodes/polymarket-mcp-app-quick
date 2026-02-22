@@ -102,8 +102,12 @@ const MarketExplorer: React.FC = () => {
   const view = state?.view || "grid";
 
   const handleMarketClick = (market: Market) => {
-    setState({ ...state, selectedMarketId: market.id });
-    sendFollowUpMessage(`Show me detailed chart for: ${market.question}`);
+    setState({ selectedMarketId: market.id, view: state?.view || "grid", filterCategory: state?.filterCategory });
+    if (market.slug) {
+      sendFollowUpMessage(`Show me detailed chart for market/${market.slug}`);
+    } else {
+      sendFollowUpMessage(`Show me detailed chart for: ${market.question}`);
+    }
   };
 
   const handleSearch = () => {

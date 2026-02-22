@@ -1,4 +1,4 @@
-import { McpUseProvider, useWidget, type WidgetMetadata } from "mcp-use/react";
+import { McpUseProvider, useWidget, useCallTool, type WidgetMetadata } from "mcp-use/react";
 import React from "react";
 import "../styles.css";
 import type { TradeConfirmationProps, TradeConfirmationState } from "./types";
@@ -24,6 +24,13 @@ const TradeConfirmation: React.FC = () => {
     sendFollowUpMessage,
   } = useWidget<TradeConfirmationProps, TradeConfirmationState>();
 
+  const { callToolAsync, data: tradeData, error: tradeError, status: tradeStatus } = useCallTool<{
+    tokenId: string;
+    amount: number;
+    side: "YES" | "NO";
+    marketTitle: string;
+  }>("confirm_trade_execution");
+
   if (isPending) {
     return (
       <McpUseProvider>
@@ -37,23 +44,61 @@ const TradeConfirmation: React.FC = () => {
     );
   }
 
-  const { marketTitle, side, action, amount, price, estimatedShares, potentialProfit } = props;
+  const { marketTitle, side, action, amount, price, estimatedShares, potentialProfit, tokenId, isRealTradingEnabled } = props;
   const currentState = state?.status || "pending";
 
-  const handleConfirmTrade = () => {
+  // Update state based on tool execution status
+  React.useEffect(() => {
+    if (tradeStatus === "success" && tradeData) {
+      const response = tradeData.content?.[0];
+      const data: any = response?.type === "object" ? response.object : null;
+
+      if (data && data.success) {
+        setState({
+          status: "success",
+          transactionHash: data.transactionHash,
+        });
+
+        const message = data.isDemo
+          ? `Demo trade executed! ${data.message || ""}`
+          : `Real trade executed successfully! Order ID: ${data.orderId}. Check your portfolio.`;
+
+        sendFollowUpMessage(message);
+      } else {
+        const errorMsg = response?.type === "text"
+          ? response.text
+          : "Trade execution failed. Please try again.";
+
+        setState({
+          status: "error",
+          errorMessage: errorMsg,
+        });
+      }
+    } else if (tradeStatus === "error" && tradeError) {
+      setState({
+        status: "error",
+        errorMessage: String(tradeError) || "Unknown error occurred",
+      });
+    }
+  }, [tradeStatus, tradeData, tradeError]);
+
+  const handleConfirmTrade = async () => {
     setState({ status: "executing" });
 
-    // Simulate trade execution
-    setTimeout(() => {
-      setState({
-        status: "success",
-        transactionHash: "0x" + Math.random().toString(16).slice(2, 18),
+    try {
+      await callToolAsync({
+        tokenId: tokenId || "",
+        amount,
+        side,
+        marketTitle,
       });
-
-      sendFollowUpMessage(
-        `Trade executed successfully! Bought ${estimatedShares.toFixed(2)} shares of ${side} at ${Math.round(price * 100)}¢. Check your portfolio to see the position.`
-      );
-    }, 1500);
+    } catch (error: any) {
+      console.error("Trade execution error:", error);
+      setState({
+        status: "error",
+        errorMessage: error.message || "Unknown error occurred",
+      });
+    }
   };
 
   const handleCancel = () => {
@@ -126,10 +171,48 @@ const TradeConfirmation: React.FC = () => {
     );
   }
 
+  // Error state
+  if (currentState === "error") {
+    return (
+      <McpUseProvider>
+        <div className="pm-frame">
+          <div className="pm-header pm-compact">
+            <div className="pm-row">
+              <div>
+                <div className="pm-kicker mb-2">Trade Failed</div>
+                <h2 className="text-2xl font-semibold text-white">Error ⚠️</h2>
+              </div>
+              <span className="pm-pill border-negative">Failed</span>
+            </div>
+          </div>
+
+          <div className="pm-compact">
+            <div className="pm-panel p-4 mb-4 border-red-500/30 bg-red-500/5">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="text-3xl">❌</div>
+                <div>
+                  <p className="text-sm font-medium mb-1 text-red-400">Trade Failed</p>
+                  <p className="text-xs text-secondary">{state?.errorMessage || "An error occurred"}</p>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setState({ status: "pending" })}
+              className="pm-button pm-button-primary px-5 py-2"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      </McpUseProvider>
+    );
+  }
+
   // Confirmation state
   const sideColor = side === "YES" ? "text-accent" : "text-negative";
   const actionColor = action === "BUY" ? "border-accent" : "border-negative";
-  const isDemoMode = true; // TODO: Check if real credentials are configured
+  const isDemoMode = !isRealTradingEnabled;
 
   return (
     <McpUseProvider>

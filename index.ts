@@ -252,7 +252,11 @@ async function getRecentMarkets(limit: number = 10): Promise<any[]> {
   }
 }
 
-async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]> {
+async function searchMarkets(
+  keyword: string,
+  limit: number = 50,
+  options: { allowSlug?: boolean } = {}
+): Promise<any[]> {
   try {
     const keywordTrimmed = keyword.trim();
     if (!keywordTrimmed) return [];
@@ -263,58 +267,18 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
     const pageSize = 100;
     const maxPages = 20;
 
-    const slug = extractSlugFromInput(keywordTrimmed);
-    if (slug) {
-      const marketsBySlug = await getMarketsBySlug(slug);
-      if (marketsBySlug.length > 0) return marketsBySlug.slice(0, limit);
+    if (options.allowSlug !== false) {
+      const slug = extractSlugFromInput(keywordTrimmed);
+      if (slug) {
+        const marketsBySlug = await getMarketsBySlug(slug);
+        if (marketsBySlug.length > 0) return marketsBySlug.slice(0, limit);
+      }
     }
 
     // Use public search (official Gamma API) to match Polymarket site behavior
     try {
-      const limitPerType = Math.max(10, limit);
-      const data = await fetchFromPolymarket(
-        `/public-search?q=${encodeURIComponent(keywordTrimmed)}&events_status=active&limit_per_type=${limitPerType}&search_profiles=false&search_tags=true&page=1&sort=relevance&ascending=false`
-      );
-      const events = Array.isArray(data?.events) ? data.events : [];
-      const unique = new Map<string, any>();
-
-      events.forEach((event: any) => {
-        const eventTitle = event?.title || event?.name || "";
-        const eventSlug = event?.slug || "";
-        const markets = Array.isArray(event?.markets) ? event.markets : [];
-
-        markets.forEach((market: any) => {
-          if (!market) return;
-          if (market.closed === true) return;
-          if (market.active === false) return;
-
-          if (market.endDate) {
-            const endDate = new Date(market.endDate).getTime();
-            if (endDate < now) return;
-          }
-
-          market.__eventTitle = eventTitle;
-          market.__eventSlug = eventSlug;
-
-          const id = market.id || market.conditionId || market.question;
-          unique.set(id, market);
-        });
-      });
-
-      const results = Array.from(unique.values())
-        .map((market) => ({
-          market,
-          score: scoreMarketMatch(
-            market,
-            keywordTrimmed,
-            `${market.__eventTitle || ""} ${market.__eventSlug || ""}`
-          ),
-        }))
-        .sort((a, b) => b.score - a.score)
-        .map(({ market }) => market)
-        .slice(0, limit);
-
-      if (results.length > 0) return results;
+      const publicResults = await publicSearchMarkets(keywordTrimmed, limit);
+      if (publicResults.length > 0) return publicResults;
     } catch (e) {
       console.error("Public search failed, falling back to tag/event scan:", e);
     }
@@ -344,6 +308,13 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
         const eventSlug = (event.slug || "");
         const eventTitleLower = eventTitle.toLowerCase();
         const eventSlugLower = eventSlug.toLowerCase();
+        const tagNames = Array.isArray(event.tags)
+          ? event.tags
+              .map((tag: any) => tag?.label || tag?.name || tag?.slug || "")
+              .filter(Boolean)
+              .join(" ")
+          : "";
+        const tagNamesLower = tagNames.toLowerCase();
 
         if (event.markets && Array.isArray(event.markets)) {
           event.markets.forEach((market: any) => {
@@ -358,7 +329,9 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
 
             const question = market.question || event.title || "";
             const questionLower = question.toLowerCase();
-            const haystack = normalizeText(`${questionLower} ${eventTitleLower} ${eventSlugLower}`);
+            const haystack = normalizeText(
+              `${questionLower} ${eventTitleLower} ${eventSlugLower} ${tagNamesLower}`
+            );
 
             const matchesAllTokens = keywordTokens.length === 0
               ? haystack.includes(keywordLower)
@@ -504,14 +477,110 @@ async function getEventsBySlug(slug: string): Promise<any[]> {
   }
 }
 
+async function publicSearchMarkets(keyword: string, limit: number): Promise<any[]> {
+  const unique = new Map<string, any>();
+  const now = Date.now();
+  const limitPerType = Math.max(10, limit);
+  let page = 1;
+  let hasMore = true;
+  let safety = 0;
+
+  while (hasMore && unique.size < limit && safety < 10) {
+    const data = await fetchFromPolymarket(
+      `/public-search?q=${encodeURIComponent(keyword)}&events_status=active&limit_per_type=${limitPerType}&search_profiles=false&search_tags=true&page=${page}&sort=relevance&ascending=false`
+    );
+
+    const events = Array.isArray(data?.events) ? data.events : [];
+
+    events.forEach((event: any) => {
+      const eventTitle = event?.title || event?.name || "";
+      const eventSlug = event?.slug || "";
+      const markets = Array.isArray(event?.markets) ? event.markets : [];
+
+      markets.forEach((market: any) => {
+        if (!market) return;
+        if (market.closed === true) return;
+        if (market.active === false) return;
+
+        if (market.endDate) {
+          const endDate = new Date(market.endDate).getTime();
+          if (endDate < now) return;
+        }
+
+        market.__eventTitle = eventTitle;
+        market.__eventSlug = eventSlug;
+
+        const id = market.id || market.conditionId || market.question;
+        unique.set(id, market);
+      });
+    });
+
+    hasMore = data?.pagination?.hasMore === true;
+    page += 1;
+    safety += 1;
+  }
+
+  if (unique.size > 0) {
+    return Array.from(unique.values()).slice(0, limit);
+  }
+
+  // If no active markets found, retry once allowing closed markets
+  page = 1;
+  hasMore = true;
+  safety = 0;
+
+  while (hasMore && unique.size < limit && safety < 5) {
+    const data = await fetchFromPolymarket(
+      `/public-search?q=${encodeURIComponent(keyword)}&events_status=active&keep_closed_markets=1&limit_per_type=${limitPerType}&search_profiles=false&search_tags=true&page=${page}&sort=relevance&ascending=false`
+    );
+
+    const events = Array.isArray(data?.events) ? data.events : [];
+
+    events.forEach((event: any) => {
+      const eventTitle = event?.title || event?.name || "";
+      const eventSlug = event?.slug || "";
+      const markets = Array.isArray(event?.markets) ? event.markets : [];
+
+      markets.forEach((market: any) => {
+        if (!market) return;
+
+        market.__eventTitle = eventTitle;
+        market.__eventSlug = eventSlug;
+
+        const id = market.id || market.conditionId || market.question;
+        unique.set(id, market);
+      });
+    });
+
+    hasMore = data?.pagination?.hasMore === true;
+    page += 1;
+    safety += 1;
+  }
+
+  return Array.from(unique.values()).slice(0, limit);
+}
+
 let tagCache: any[] | null = null;
 
 async function getTags(): Promise<any[]> {
   if (tagCache) return tagCache;
   try {
-    const tags = await fetchFromPolymarket("/tags");
-    tagCache = Array.isArray(tags) ? tags : [];
-    return tagCache;
+    const allTags: any[] = [];
+    const pageSize = 200;
+    let offset = 0;
+    let safety = 0;
+
+    while (safety < 10) {
+      const tags = await fetchFromPolymarket(`/tags?limit=${pageSize}&offset=${offset}`);
+      if (!Array.isArray(tags) || tags.length === 0) break;
+      allTags.push(...tags);
+      if (tags.length < pageSize) break;
+      offset += pageSize;
+      safety += 1;
+    }
+
+    tagCache = allTags;
+    return allTags;
   } catch (e) {
     console.error("Error fetching tags:", e);
     return [];
@@ -527,44 +596,56 @@ async function findTagByKeyword(keyword: string): Promise<any | undefined> {
   const keywordNorm = normalizeText(keyword);
   if (!keywordNorm) return undefined;
 
-  const exact = tags.find((tag) => normalizeText(tag?.name || "") === keywordNorm);
+  const exact = tags.find((tag) => {
+    const name = normalizeText(tag?.label || tag?.name || tag?.slug || "");
+    return name === keywordNorm;
+  });
   if (exact) return exact;
 
   return tags.find((tag) => {
-    const name = normalizeText(tag?.name || "");
+    const name = normalizeText(tag?.label || tag?.name || tag?.slug || "");
     return name && (name.includes(keywordNorm) || keywordNorm.includes(name));
   });
 }
 
 async function getMarketsByTag(tagId: string | number, limit: number): Promise<any[]> {
   try {
-    const events = await fetchFromPolymarket(
-      `/events?tag_id=${tagId}&related_tags=true&active=true&closed=false&order=id&ascending=false&limit=${Math.max(50, limit)}`
-    );
-
-    if (!Array.isArray(events)) return [];
-
     const now = Date.now();
     const markets: any[] = [];
+    const pageSize = Math.max(50, Math.min(200, limit * 2));
+    let offset = 0;
+    let safety = 0;
 
-    events.forEach((event) => {
-      const eventTitle = event?.title || event?.name || "";
-      const eventSlug = event?.slug || "";
-      const eventMarkets = Array.isArray(event?.markets) ? event.markets : [];
+    while (markets.length < limit && safety < 10) {
+      const events = await fetchFromPolymarket(
+        `/events?tag_id=${tagId}&related_tags=true&active=true&closed=false&order=id&ascending=false&limit=${pageSize}&offset=${offset}`
+      );
 
-      eventMarkets.forEach((market: any) => {
-        if (!market) return;
-        if (market.closed === true) return;
-        if (market.active === false) return;
-        if (market.endDate) {
-          const endDate = new Date(market.endDate).getTime();
-          if (endDate < now) return;
-        }
-        market.__eventTitle = eventTitle;
-        market.__eventSlug = eventSlug;
-        markets.push(market);
+      if (!Array.isArray(events) || events.length === 0) break;
+
+      events.forEach((event) => {
+        const eventTitle = event?.title || event?.name || "";
+        const eventSlug = event?.slug || "";
+        const eventMarkets = Array.isArray(event?.markets) ? event.markets : [];
+
+        eventMarkets.forEach((market: any) => {
+          if (!market) return;
+          if (market.closed === true) return;
+          if (market.active === false) return;
+          if (market.endDate) {
+            const endDate = new Date(market.endDate).getTime();
+            if (endDate < now) return;
+          }
+          market.__eventTitle = eventTitle;
+          market.__eventSlug = eventSlug;
+          markets.push(market);
+        });
       });
-    });
+
+      if (events.length < pageSize) break;
+      offset += pageSize;
+      safety += 1;
+    }
 
     return markets.slice(0, limit);
   } catch (e) {
@@ -900,7 +981,7 @@ server.tool(
   },
   async ({ keyword, limit = 10 }) => {
     const cleanKeyword = sanitizeKeywordInput(keyword);
-    const markets = await searchMarkets(cleanKeyword, 50);
+    const markets = await searchMarkets(cleanKeyword, 50, { allowSlug: false });
 
     if (markets.length === 0) {
       return text(`No markets found matching "${cleanKeyword}"`);
@@ -997,7 +1078,7 @@ server.tool(
   async ({ marketKeyword, side, amount = 100 }) => {
     // Search for the market
     const cleanKeyword = sanitizeKeywordInput(marketKeyword);
-    const markets = await searchMarkets(cleanKeyword, 5);
+    const markets = await searchMarkets(cleanKeyword, 5, { allowSlug: true });
 
     if (markets.length === 0) {
       return mcpError(`No market found for "${marketKeyword}". Please try a different search term.`);
@@ -1139,7 +1220,7 @@ server.tool(
     }
 
     if (!marketData) {
-      const markets = await searchMarkets(cleanKeyword, 50);
+      const markets = await searchMarkets(cleanKeyword, 50, { allowSlug: false });
       marketData = selectBestMarket(markets, cleanKeyword);
     }
 
