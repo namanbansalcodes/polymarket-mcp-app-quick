@@ -1,7 +1,7 @@
 import { MCPServer, object, text, widget, error as mcpError } from "mcp-use/server";
 import { z } from "zod";
 import https from "https";
-import { initializeClient, placeMarketOrder, placeLimitOrder, simulateOrder, isClientReady, getWalletAddress } from "./polymarket-trading.js";
+import { initializeClient, placeMarketOrder, placeLimitOrder, simulateOrder, isClientReady, getWalletAddress, logout } from "./polymarket-trading.js";
 
 const server = new MCPServer({
   name: "polymarket",
@@ -166,7 +166,7 @@ async function getTrendingMarkets(limit: number = 10): Promise<any[]> {
   try {
     const eventLimit = Math.max(20, limit * 2);
     const events = await fetchFromPolymarket(
-      `/events?active=true&closed=false&order=volume_24hr&ascending=false&limit=${eventLimit}`
+      `/events?active=true&closed=false&order=volume24hr&ascending=false&limit=${eventLimit}`
     );
 
     if (!Array.isArray(events)) {
@@ -254,7 +254,7 @@ async function getRecentMarkets(limit: number = 10): Promise<any[]> {
 
 async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]> {
   try {
-    const keywordTrimmed = keyword.trim();
+    const keywordTrimmed = sanitizeKeywordInput(keyword);
     if (!keywordTrimmed) return [];
 
     const keywordLower = keywordTrimmed.toLowerCase();
@@ -276,7 +276,8 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
         `/public-search?q=${encodeURIComponent(keywordTrimmed)}&events_status=active&limit_per_type=${limitPerType}&search_profiles=false&search_tags=true&page=1&sort=relevance&ascending=false`
       );
       const events = Array.isArray(data?.events) ? data.events : [];
-      const unique = new Map<string, any>();
+      const filtered = new Map<string, any>();
+      const unfiltered = new Map<string, any>();
 
       events.forEach((event: any) => {
         const eventTitle = event?.title || event?.name || "";
@@ -285,6 +286,13 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
 
         markets.forEach((market: any) => {
           if (!market) return;
+
+          market.__eventTitle = eventTitle;
+          market.__eventSlug = eventSlug;
+
+          const id = market.id || market.conditionId || market.question;
+          unfiltered.set(id, market);
+
           if (market.closed === true) return;
           if (market.active === false) return;
 
@@ -293,15 +301,12 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
             if (endDate < now) return;
           }
 
-          market.__eventTitle = eventTitle;
-          market.__eventSlug = eventSlug;
-
-          const id = market.id || market.conditionId || market.question;
-          unique.set(id, market);
+          filtered.set(id, market);
         });
       });
 
-      const results = Array.from(unique.values())
+      const source = filtered.size > 0 ? filtered : unfiltered;
+      const results = Array.from(source.values())
         .map((market) => ({
           market,
           score: scoreMarketMatch(
@@ -413,6 +418,46 @@ function formatCurrency(value: number): string {
   if (value >= 1000000) return `$${(value / 1000000).toFixed(2)}M`;
   if (value >= 1000) return `$${(value / 1000).toFixed(1)}K`;
   return `$${value.toFixed(2)}`;
+}
+
+function sanitizeKeywordInput(input: string): string {
+  const original = input.trim();
+  let q = original;
+  if (!q) return q;
+
+  q = q.replace(/^["'`]+|["'`]+$/g, "");
+
+  const prefixPatterns = [
+    /^(search\s+markets\s+for:)\s*/i,
+    /^(search\s+markets\s+for)\s*/i,
+    /^(search\s+for:)\s*/i,
+    /^(search\s+for)\s*/i,
+    /^(search\s+markets:)\s*/i,
+    /^(search\s+markets)\s*/i,
+    /^(show\s+me)\s*/i,
+    /^(find)\s*/i,
+  ];
+
+  for (const pattern of prefixPatterns) {
+    if (pattern.test(q)) {
+      q = q.replace(pattern, "").trim();
+      break;
+    }
+  }
+
+  const colonIndex = q.lastIndexOf(":");
+  if (colonIndex > 0 && colonIndex < q.length - 1) {
+    const afterColon = q.slice(colonIndex + 1).trim();
+    if (afterColon.length >= 2) {
+      q = afterColon;
+    }
+  }
+
+  if (!q || q.length < 2) {
+    return original;
+  }
+
+  return q;
 }
 
 function extractSlugFromInput(input: string): string | null {
@@ -674,6 +719,31 @@ server.tool(
       },
       output: text("Connect your Polymarket account to access portfolio features, track positions, and get personalized recommendations."),
     });
+  }
+);
+
+server.tool(
+  {
+    name: "logout",
+    description: "Logout from Polymarket and clear your API key from the current session",
+    schema: z.object({}),
+  },
+  async () => {
+    const result = logout();
+
+    if (result.success) {
+      return object({
+        status: "success",
+        message: result.message,
+        output: text(`✓ ${result.message}\n\nYour API key has been cleared from this session. You'll need to login again to access trading features.`),
+      });
+    } else {
+      return object({
+        status: "error",
+        message: result.message,
+        output: text(`ℹ ${result.message}`),
+      });
+    }
   }
 );
 
@@ -989,7 +1059,8 @@ server.tool(
     },
   },
   async ({ keyword }) => {
-    const slug = extractSlugFromInput(keyword);
+    const cleanKeyword = sanitizeKeywordInput(keyword);
+    const slug = extractSlugFromInput(keyword) || extractSlugFromInput(cleanKeyword);
     let marketData: any | undefined;
 
     if (slug) {
@@ -1008,8 +1079,8 @@ server.tool(
     }
 
     if (!marketData) {
-      const markets = await searchMarkets(keyword, 50);
-      marketData = selectBestMarket(markets, keyword);
+      const markets = await searchMarkets(cleanKeyword, 50);
+      marketData = selectBestMarket(markets, cleanKeyword);
     }
 
     if (!marketData) {

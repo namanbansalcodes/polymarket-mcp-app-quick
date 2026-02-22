@@ -55,6 +55,9 @@ const Login: React.FC = () => {
       walletAddress: undefined,
       isConnected: false,
     });
+
+    // Call logout tool to clear server-side session
+    sendFollowUpMessage("Call the logout tool to clear my API key from the server");
   };
 
   const handleSkip = () => {

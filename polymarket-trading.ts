@@ -170,24 +170,19 @@ export async function getBalance(): Promise<{
   usdc: number;
   address: string;
 }> {
-  const client = getClient();
-
   if (!walletAddress) {
     throw new Error("No wallet connected");
   }
 
   try {
-    // Get balance from CLOB client
-    const balances = await client.getBalances();
-    const usdcBalance = parseFloat(balances.usdc || "0");
-
+    // TODO: Implement balance check via CLOB API or Polygon RPC
+    // For now, return placeholder
     return {
-      usdc: usdcBalance,
+      usdc: 0,
       address: walletAddress,
     };
   } catch (error: any) {
     console.error("Failed to fetch balance:", error);
-    // Return 0 if balance check fails
     return {
       usdc: 0,
       address: walletAddress,
@@ -207,6 +202,28 @@ export function isClientReady(): boolean {
  */
 export function getWalletAddress(): string | null {
   return walletAddress;
+}
+
+/**
+ * Logout and clear the client connection
+ */
+export function logout(): { success: boolean; message: string } {
+  if (!clobClient && !walletAddress) {
+    return {
+      success: false,
+      message: "No active session to logout from",
+    };
+  }
+
+  const prevAddress = walletAddress;
+  clobClient = null;
+  walletAddress = null;
+
+  console.log(`✓ Logged out from ${prevAddress}`);
+  return {
+    success: true,
+    message: `Successfully logged out from ${prevAddress}`,
+  };
 }
 
 /**
