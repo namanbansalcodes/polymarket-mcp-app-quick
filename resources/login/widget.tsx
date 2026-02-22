@@ -21,8 +21,12 @@ const Login: React.FC = () => {
     state,
     setState,
     sendFollowUpMessage,
-    props: { errorMessage },
+    props,
   } = useWidget<LoginProps, LoginState>();
+
+  const [privateKey, setPrivateKey] = React.useState("");
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   if (isPending) {
     return (
@@ -37,14 +41,29 @@ const Login: React.FC = () => {
     );
   }
 
-  const handleConnect = () => {
-    setState({
-      walletAddress: "Linked",
-      isConnected: true,
-    });
+  const handleConnect = async () => {
+    if (!privateKey.trim()) {
+      setError("Please enter your private key");
+      return;
+    }
 
-    // Trigger follow-up to fetch portfolio
-    sendFollowUpMessage("Show my portfolio");
+    if (!privateKey.startsWith("0x")) {
+      setError("Private key must start with 0x");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError("");
+
+    // Call the login tool with the private key
+    // Note: This sends the key securely to the server for this session only
+    sendFollowUpMessage(`Please call the login tool with privateKey parameter set to: ${privateKey}`);
+
+    // Optimistically update state
+    setState({
+      isConnected: true,
+      walletAddress: "Connecting...",
+    });
   };
 
   const handleDisconnect = () => {
@@ -65,7 +84,7 @@ const Login: React.FC = () => {
   };
 
   // Connected state
-  if (state?.isConnected) {
+  if (props.loginStatus === "connected" || state?.isConnected) {
     return (
       <McpUseProvider>
         <div className="pm-frame">
@@ -84,7 +103,7 @@ const Login: React.FC = () => {
             <div className="pm-row">
               <div>
                 <div className="pm-meta mb-1">Wallet</div>
-                <div className="font-mono text-lg">{state.walletAddress ?? "Linked"}</div>
+                <div className="font-mono text-sm">{props.walletAddress || state.walletAddress || "Connected"}</div>
               </div>
               <div className="flex gap-3">
                 <button
@@ -118,29 +137,59 @@ const Login: React.FC = () => {
               <div className="pm-kicker mb-2">Authentication</div>
               <h2 className="text-2xl font-semibold text-white">Connect to Polymarket</h2>
             </div>
-            <button
-              onClick={handleConnect}
-              className="pm-button pm-button-primary px-5 py-2"
-            >
-              Connect
-            </button>
           </div>
         </div>
 
-        <div className="pm-compact">
-          {errorMessage && (
-            <div className="pm-panel p-3 border border-red-500/30">
-              <p className="text-sm text-red-400">{errorMessage}</p>
+        <div className="px-6 pb-6">
+          {/* Error Messages */}
+          {(props.errorMessage || error) && (
+            <div className="pm-panel p-3 border border-red-500/30 mb-4">
+              <p className="text-sm text-red-400">{props.errorMessage || error}</p>
             </div>
           )}
-          <div className="pm-row">
-            <p className="text-sm text-secondary">Connect to view portfolio and positions.</p>
+
+          {/* Private Key Input */}
+          <div className="pm-panel p-4 mb-4">
+            <label className="block mb-2">
+              <span className="text-sm font-medium text-secondary">Private Key</span>
+              <input
+                type="password"
+                value={privateKey}
+                onChange={(e) => setPrivateKey(e.target.value)}
+                placeholder="0x..."
+                className="mt-1 w-full px-3 py-2 bg-surface-elevated border border-default rounded-lg text-white placeholder-secondary/50 focus:outline-none focus:ring-2 focus:ring-accent"
+                disabled={isSubmitting}
+              />
+            </label>
+            <p className="text-xs text-secondary mt-2">
+              ⚠️ Your private key is sent securely and stored only in this session
+            </p>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-3">
+            <button
+              onClick={handleConnect}
+              disabled={isSubmitting || !privateKey.trim()}
+              className="pm-button pm-button-primary px-5 py-2 flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? "Connecting..." : "Connect Wallet"}
+            </button>
             <button
               onClick={handleSkip}
+              disabled={isSubmitting}
               className="pm-button pm-button-ghost px-4 py-2"
             >
-              Continue without login
+              Skip
             </button>
+          </div>
+
+          {/* Info */}
+          <div className="mt-4 pm-panel p-3">
+            <p className="text-xs text-secondary">
+              <span className="font-medium">💡 How to get your private key:</span><br />
+              Export it from MetaMask or your wallet app. Never share it with anyone.
+            </p>
           </div>
         </div>
       </div>

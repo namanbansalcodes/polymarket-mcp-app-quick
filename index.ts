@@ -254,7 +254,7 @@ async function getRecentMarkets(limit: number = 10): Promise<any[]> {
 
 async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]> {
   try {
-    const keywordTrimmed = sanitizeKeywordInput(keyword);
+    const keywordTrimmed = keyword.trim();
     if (!keywordTrimmed) return [];
 
     const keywordLower = keywordTrimmed.toLowerCase();
@@ -276,8 +276,7 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
         `/public-search?q=${encodeURIComponent(keywordTrimmed)}&events_status=active&limit_per_type=${limitPerType}&search_profiles=false&search_tags=true&page=1&sort=relevance&ascending=false`
       );
       const events = Array.isArray(data?.events) ? data.events : [];
-      const filtered = new Map<string, any>();
-      const unfiltered = new Map<string, any>();
+      const unique = new Map<string, any>();
 
       events.forEach((event: any) => {
         const eventTitle = event?.title || event?.name || "";
@@ -286,13 +285,6 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
 
         markets.forEach((market: any) => {
           if (!market) return;
-
-          market.__eventTitle = eventTitle;
-          market.__eventSlug = eventSlug;
-
-          const id = market.id || market.conditionId || market.question;
-          unfiltered.set(id, market);
-
           if (market.closed === true) return;
           if (market.active === false) return;
 
@@ -301,12 +293,15 @@ async function searchMarkets(keyword: string, limit: number = 50): Promise<any[]
             if (endDate < now) return;
           }
 
-          filtered.set(id, market);
+          market.__eventTitle = eventTitle;
+          market.__eventSlug = eventSlug;
+
+          const id = market.id || market.conditionId || market.question;
+          unique.set(id, market);
         });
       });
 
-      const source = filtered.size > 0 ? filtered : unfiltered;
-      const results = Array.from(source.values())
+      const results = Array.from(unique.values())
         .map((market) => ({
           market,
           score: scoreMarketMatch(
@@ -647,11 +642,26 @@ function selectBestMarket(markets: any[], keyword: string): any | undefined {
 }
 
 function getPriceData(market: any) {
-  const pricesStr = market.outcomePrices || '["0.5", "0.5"]';
-  const prices = JSON.parse(pricesStr);
+  let prices: any = market.outcomePrices;
+
+  if (Array.isArray(prices)) {
+    // use as-is
+  } else if (typeof prices === "string") {
+    try {
+      prices = JSON.parse(prices);
+    } catch {
+      prices = null;
+    }
+  } else {
+    prices = null;
+  }
+
+  const yes = Array.isArray(prices) ? prices[0] : "0.5";
+  const no = Array.isArray(prices) ? prices[1] : "0.5";
+
   return {
-    yesPrice: parseFloat(prices[0] || "0.5"),
-    noPrice: parseFloat(prices[1] || "0.5"),
+    yesPrice: parseFloat(yes || "0.5"),
+    noPrice: parseFloat(no || "0.5"),
   };
 }
 
@@ -702,8 +712,9 @@ server.tool(
 server.tool(
   {
     name: "login",
-    description: "Login to Polymarket to access portfolio and personalized features",
+    description: "Login to Polymarket with your private key to access portfolio and trading features",
     schema: z.object({
+      privateKey: z.string().optional().describe("Wallet private key (must start with 0x)"),
       autoConnect: z.boolean().optional().describe("Automatically attempt connection if credentials exist"),
     }),
     widget: {
@@ -712,12 +723,59 @@ server.tool(
       invoked: "Login ready",
     },
   },
-  async ({ autoConnect }) => {
+  async ({ privateKey, autoConnect }) => {
+    // If private key is provided, try to initialize the client
+    if (privateKey) {
+      try {
+        if (!privateKey.startsWith("0x")) {
+          return widget({
+            props: {
+              loginStatus: "error",
+              errorMessage: "Private key must start with 0x",
+            },
+            output: text("❌ Invalid private key format. Private key must start with 0x"),
+          });
+        }
+
+        const result = await initializeClient(privateKey);
+
+        return widget({
+          props: {
+            loginStatus: "connected",
+            walletAddress: result.address,
+          },
+          output: text(`✓ Successfully connected to Polymarket!\n\nWallet: ${result.address}\n\nYou can now view your portfolio and execute trades.`),
+        });
+      } catch (error: any) {
+        console.error("Login failed:", error);
+        return widget({
+          props: {
+            loginStatus: "error",
+            errorMessage: error.message || "Failed to connect",
+          },
+          output: text(`❌ Login failed: ${error.message || "Invalid private key"}\n\nPlease check your private key and try again.`),
+        });
+      }
+    }
+
+    // Check if already logged in
+    const currentWallet = getWalletAddress();
+    if (currentWallet) {
+      return widget({
+        props: {
+          loginStatus: "connected",
+          walletAddress: currentWallet,
+        },
+        output: text(`Already connected to Polymarket!\n\nWallet: ${currentWallet}`),
+      });
+    }
+
+    // Show login form
     return widget({
       props: {
         loginStatus: "pending",
       },
-      output: text("Connect your Polymarket account to access portfolio features, track positions, and get personalized recommendations."),
+      output: text("Connect your Polymarket account to access portfolio features, track positions, and execute trades."),
     });
   }
 );
@@ -841,10 +899,11 @@ server.tool(
     },
   },
   async ({ keyword, limit = 10 }) => {
-    const markets = await searchMarkets(keyword, 50);
+    const cleanKeyword = sanitizeKeywordInput(keyword);
+    const markets = await searchMarkets(cleanKeyword, 50);
 
     if (markets.length === 0) {
-      return text(`No markets found matching "${keyword}"`);
+      return text(`No markets found matching "${cleanKeyword}"`);
     }
 
     const displayMarkets = markets.slice(0, limit);
@@ -868,9 +927,9 @@ server.tool(
       props: {
         markets: formattedMarkets,
         totalMarkets: markets.length,
-        query: keyword,
+        query: cleanKeyword,
       },
-      output: text(`Found ${markets.length} markets matching "${keyword}". Click any market to view detailed charts.`),
+      output: text(`Found ${markets.length} markets matching "${cleanKeyword}". Click any market to view detailed charts.`),
     });
   }
 );
@@ -937,7 +996,8 @@ server.tool(
   },
   async ({ marketKeyword, side, amount = 100 }) => {
     // Search for the market
-    const markets = await searchMarkets(marketKeyword, 5);
+    const cleanKeyword = sanitizeKeywordInput(marketKeyword);
+    const markets = await searchMarkets(cleanKeyword, 5);
 
     if (markets.length === 0) {
       return mcpError(`No market found for "${marketKeyword}". Please try a different search term.`);
