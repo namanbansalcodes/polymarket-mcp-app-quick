@@ -29,6 +29,21 @@ Use these directly in the inspector or your agent:
 
 Tip: clicking a market card will pass the slug automatically for precise detail views.
 
+## Claude Desktop Testing
+
+This app has only been tested in **Claude Desktop**.
+
+To enable it:
+
+1. Run the server locally:
+   ```bash
+   npm install
+   npm run dev
+   ```
+2. Open the Claude Desktop MCP settings and add a new server that points to this app.
+3. Restart Claude Desktop and select the Polymarket MCP app.
+4. Use the Example Prompts above to drive the widgets.
+
 ## Getting Started
 
 First, run the development server:
