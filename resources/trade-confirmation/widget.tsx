@@ -1,4 +1,4 @@
-import { McpUseProvider, useWidget, useCallTool, type WidgetMetadata } from "mcp-use/react";
+import { McpUseProvider, useWidget, type WidgetMetadata } from "mcp-use/react";
 import React from "react";
 import "../styles.css";
 import type { TradeConfirmationProps, TradeConfirmationState } from "./types";
@@ -18,14 +18,6 @@ export const widgetMetadata: WidgetMetadata = {
 const TradeConfirmation: React.FC = () => {
   const { props, isPending, state, setState, sendFollowUpMessage } =
     useWidget<TradeConfirmationProps, TradeConfirmationState>();
-
-  const { callToolAsync } = useCallTool<{
-    tokenId: string;
-    amount: number;
-    side: "YES" | "NO";
-    price?: number;
-    marketTitle: string;
-  }>("confirm_trade_execution");
 
   if (isPending) {
     return (
@@ -55,61 +47,17 @@ const TradeConfirmation: React.FC = () => {
   const currentState = state?.status || "pending";
 
   const handleConfirmTrade = async () => {
-    setState({ status: "executing" });
-
-    try {
-      const result = await callToolAsync({
-        tokenId: tokenId || "",
-        amount,
-        side,
-        price,
-        marketTitle,
-      });
-
-      const response = result?.content?.[0];
-      const data: any = response?.type === "object" ? response.object : null;
-      const message =
-        data?.message ||
-        `Mock trade executed: Bought ${side} on "${marketTitle}" for $${amount.toFixed(2)}.`;
-
-      setState({
-        status: "success",
-        orderId: data?.orderId,
-        transactionHash: data?.transactionHash,
-        message,
-      });
-
-      sendFollowUpMessage(message);
-    } catch (error: any) {
-      const message = `Mock trade executed: Bought ${side} on "${marketTitle}" for $${amount.toFixed(2)}.`;
-      console.error("Trade execution error:", error);
-      setState({
-        status: "success",
-        message,
-      });
-      sendFollowUpMessage(message);
-    }
+    const message = `Mock trade executed: Bought ${side} on "${marketTitle}" for $${amount.toFixed(2)}.`;
+    setState({
+      status: "success",
+      message,
+    });
+    sendFollowUpMessage(message);
   };
 
   const handleCancel = () => {
     sendFollowUpMessage("Trade cancelled. What would you like to do next?");
   };
-
-  if (currentState === "executing") {
-    return (
-      <McpUseProvider>
-        <div className="pm-frame pm-compact">
-          <div className="pm-row">
-            <div>
-              <div className="pm-kicker mb-1">Trade</div>
-              <h2 className="text-lg font-semibold text-white">Executing...</h2>
-            </div>
-            <span className="pm-pill">Processing</span>
-          </div>
-        </div>
-      </McpUseProvider>
-    );
-  }
 
   if (currentState === "success") {
     return (

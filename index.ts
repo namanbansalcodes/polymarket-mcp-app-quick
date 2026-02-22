@@ -743,10 +743,14 @@ function getPriceData(market: any) {
 
   const yes = Array.isArray(prices) ? prices[0] : "0.5";
   const no = Array.isArray(prices) ? prices[1] : "0.5";
+  const toNumber = (value: any, fallback: number) => {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
 
   return {
-    yesPrice: parseFloat(yes || "0.5"),
-    noPrice: parseFloat(no || "0.5"),
+    yesPrice: toNumber(yes || "0.5", 0.5),
+    noPrice: toNumber(no || "0.5", 0.5),
   };
 }
 
@@ -766,7 +770,9 @@ function getTokenId(market: any, side: "YES" | "NO"): string | null {
     if (!Array.isArray(tokens) || tokens.length < 2) return null;
 
     // Index 0 = YES token, Index 1 = NO token
-    return side === "YES" ? tokens[0] : tokens[1];
+    const token = side === "YES" ? tokens[0] : tokens[1];
+    if (token === undefined || token === null) return null;
+    return String(token);
   } catch (e) {
     console.error("Failed to parse clobTokenIds:", e);
     return null;
@@ -804,6 +810,12 @@ function buildMockOrder(params: {
       size,
     },
   };
+}
+
+function toOptionalString(value: any): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const stringValue = String(value).trim();
+  return stringValue.length > 0 ? stringValue : undefined;
 }
 
 // ============================================================================
@@ -1130,7 +1142,26 @@ server.tool(
 
     const market = markets[0];
     const { yesPrice, noPrice } = getPriceData(market);
-    const price = side === "YES" ? yesPrice : noPrice;
+    const basePrice = side === "YES" ? yesPrice : noPrice;
+    const normalizedPrice = Number.isFinite(basePrice) ? basePrice : 0.5;
+    const rawTitle =
+      market.question ||
+      market.title ||
+      market.__eventTitle ||
+      market.eventTitle ||
+      market.slug ||
+      market.marketSlug ||
+      "";
+    const marketTitle = typeof rawTitle === "string" ? rawTitle.trim() : "";
+    const safeMarketTitle = marketTitle || "Selected market";
+    const marketId = toOptionalString(
+      market.id ||
+      market.conditionId ||
+      market.condition_id ||
+      market.marketId ||
+      market.market_id
+    );
+    const conditionId = toOptionalString(market.conditionId || market.condition_id);
 
     // Get tokenId for the selected side
     const tokenIdRaw = getTokenId(market, side);
@@ -1142,26 +1173,26 @@ server.tool(
     }
 
     // Calculate estimates
-    const validPrice = Math.max(0.01, Math.min(0.99, price));
+    const validPrice = Math.max(0.01, Math.min(0.99, normalizedPrice));
     const estimatedShares = amount / validPrice;
     const potentialProfit = amount * ((1 - validPrice) / validPrice);
 
     return widget({
       props: {
-        marketTitle: market.question,
-        marketId: market.id || market.conditionId,
-        conditionId: market.conditionId,
+        marketTitle: safeMarketTitle,
+        marketId,
+        conditionId,
         side,
         action: "BUY",
         amount,
         price: validPrice,
         estimatedShares,
         potentialProfit,
-        tokenId: tokenId,
+        tokenId: String(tokenId),
         isRealTradingEnabled: realTradingEnabled,
       },
       output: text(
-        `Trade prepared: BUY ${amount} USD of ${side} on "${market.question}" at ${Math.round(validPrice * 100)}¢ (${estimatedShares.toFixed(2)} shares). ` +
+        `Trade prepared: BUY ${amount} USD of ${side} on "${safeMarketTitle}" at ${Math.round(validPrice * 100)}¢ (${estimatedShares.toFixed(2)} shares). ` +
         (realTradingEnabled
           ? "Click confirm to execute this REAL trade."
           : "Demo mode - this will be a simulated trade.")
